@@ -20,7 +20,12 @@ users_col = db['users']
 files_col = db['files']
 
 users_col.create_index('username', unique=True)
-files_col.create_index('filename', unique=True)
+# Remove the unique index on filename if it exists
+try:
+    files_col.drop_index('filename_1')
+except Exception as e:
+    print(f"Note: Could not drop filename index (it may not exist): {e}")
+# files_col.create_index('filename', unique=True)  # Commented out to prevent recreation
 
 file_locks = {}
 
@@ -120,33 +125,45 @@ def handle_upload(conn, user, data):
     # FIX 1: Sanitize filename to prevent path traversal
     filename = os.path.basename(data.get('filename'))  # Critical fix here
     filesize = data.get('filesize')
+    is_edit = data.get('is_edit', False)
+    is_owned = data.get('is_owned', False)
+
     if not filename or filesize is None:
         send_json(conn, {"status": "error", "message": "Invalid upload parameters."})
         return
     uid = user['_id']
-    file_doc = files_col.find_one({"filename": filename})
-    is_new = (file_doc is None)
-    # Determine if user is allowed to upload
-    if is_new:
-        # New file: make this user the owner
-        owner_id = uid
+
+    if is_edit:
+        # This is an edit operation
+        if is_owned:
+            # User is editing their own file
+            file_doc = files_col.find_one({"filename": filename, "owner_user_id": uid})
+        else:
+            # User is editing a shared file
+            file_doc = files_col.find_one({
+                "filename": filename,
+                "allowed_edit_user_ids": uid
+            })
+
+        if not file_doc:
+            send_json(conn, {"status": "error", "message": "File not found or no edit permission."})
+            return
+
+        filepath = file_doc['path']
+    else:
+        # This is a new file
         file_subdir = os.path.join(BASE_DIR, str(uid))
         os.makedirs(file_subdir, exist_ok=True)
         filepath = os.path.join(file_subdir, filename)
-        # Insert DB document
+        # Create new file document
         files_col.insert_one({
             "filename": filename,
             "path": filepath,
-            "owner_user_id": owner_id,
+            "owner_user_id": uid,
             "allowed_read_user_ids": [],
             "allowed_edit_user_ids": []
         })
-    else:
-        owner_id = file_doc['owner_user_id']
-        filepath = file_doc['path']
-        if uid != owner_id and uid not in file_doc.get('allowed_edit_user_ids', []):
-            send_json(conn, {"status": "error", "message": "No edit permission."})
-            return
+
     # Ready to receive file data
     send_json(conn, {"status": "ready"})
     # Acquire write lock for this file
@@ -174,11 +191,23 @@ def handle_download(conn, user, data):
         send_json(conn, {"status": "error", "message": "Missing filename."})
         return
     uid = user['_id']
-    print(filename)
-    file_doc = files_col.find_one({"filename": filename})
+
+    # Find the file owned by this user
+    file_doc = files_col.find_one({"filename": filename, "owner_user_id": uid})
+    if not file_doc:
+        # If not found in user's files, check shared files
+        file_doc = files_col.find_one({
+            "filename": filename,
+            "$or": [
+                {"allowed_read_user_ids": uid},
+                {"allowed_edit_user_ids": uid}
+            ]
+        })
+
     if not file_doc:
         send_json(conn, {"status": "error", "message": "File not found."})
         return
+
     owner_id = file_doc['owner_user_id']
     if uid != owner_id and uid not in file_doc.get('allowed_read_user_ids', []) \
             and uid not in file_doc.get('allowed_edit_user_ids', []):
@@ -259,14 +288,14 @@ def handle_delete(conn, user, data):
     if not filename:
         send_json(conn, {"status": "error", "message": "Missing filename."})
         return
-    file_doc = files_col.find_one({"filename": filename})
+    uid = user['_id']
+
+    # Find the file owned by this user
+    file_doc = files_col.find_one({"filename": filename, "owner_user_id": uid})
     if not file_doc:
         send_json(conn, {"status": "error", "message": "File not found."})
         return
-    uid = user['_id']
-    if file_doc['owner_user_id'] != uid:
-        send_json(conn, {"status": "error", "message": "Only owner may delete."})
-        return
+
     # Remove from disk
     try:
         os.remove(file_doc['path'])
@@ -281,19 +310,19 @@ def handle_rename(conn, user, data):
     old_name = data.get('old_filename')
     raw_new = data.get('new_filename') or ""
     if not old_name or not raw_new:
-        send_json(conn, {"status":"error","message":"Missing filenames."})
+        send_json(conn, {"status": "error", "message": "Missing filenames."})
         return
 
     # Lookup
     file_doc = files_col.find_one({"filename": old_name})
     if not file_doc:
-        send_json(conn, {"status":"error","message":"File not found."})
+        send_json(conn, {"status": "error", "message": "File not found."})
         return
 
     uid = user['_id']
     allowed_edit = file_doc.get('allowed_edit_user_ids', [])
     if uid != file_doc['owner_user_id'] and uid not in allowed_edit:
-        send_json(conn, {"status":"error","message":"No permission to rename."})
+        send_json(conn, {"status": "error", "message": "No permission to rename."})
         return
 
     # Preserve extension
@@ -302,7 +331,7 @@ def handle_rename(conn, user, data):
     new_name = base_new + ext_old
 
     # Paths
-    dirpath  = os.path.dirname(file_doc['path'])
+    dirpath = os.path.dirname(file_doc['path'])
     old_path = file_doc['path']
     new_path = os.path.join(dirpath, new_name)
 
@@ -310,7 +339,7 @@ def handle_rename(conn, user, data):
     try:
         os.rename(old_path, new_path)
     except OSError as e:
-        send_json(conn, {"status":"error","message":f"OS error: {e}"})
+        send_json(conn, {"status": "error", "message": f"OS error: {e}"})
         return
 
     # Update DB
@@ -318,7 +347,7 @@ def handle_rename(conn, user, data):
         {"_id": file_doc['_id']},
         {"$set": {"filename": new_name, "path": new_path}}
     )
-    send_json(conn, {"status":"ok","message":f"Renamed to '{new_name}'."})
+    send_json(conn, {"status": "ok", "message": f"Renamed to '{new_name}'."})
 
 
 def handle_client(conn, addr):
