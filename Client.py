@@ -348,7 +348,6 @@ class CloudClientGUI:
         sel_shared = self.list_shared.curselection()
         if sel_owned:
             filename = self.list_owned.get(sel_owned[0])
-            print(filename)
         elif sel_shared:
             entry = self.list_shared.get(sel_shared[0])
             if ' (' in entry:
@@ -390,38 +389,56 @@ class CloudClientGUI:
         sel_shared = self.list_shared.curselection()
         if sel_owned:
             filename = self.list_owned.get(sel_owned[0])
+            is_owned = True
         elif sel_shared:
             entry = self.list_shared.get(sel_shared[0])
             if ' (' in entry:
                 filename = entry.rsplit(' (', 1)[0]
+                perm = entry.rsplit(' (', 1)[1].rstrip(')')
+                if perm != 'edit':
+                    messagebox.showerror("Error", "You don't have edit permission for this file.")
+                    return
             else:
                 filename = entry
+            is_owned = False
         else:
             messagebox.showerror("Error", "No file selected.")
             return
+
         path = filedialog.askopenfilename(title=f"Select new version for {filename}")
         if not path:
             return
         filesize = os.path.getsize(path)
-        self.send_json({"action": "upload", "filename": filename, "filesize": filesize})
+
+        # Send edit request with is_edit flag
+        self.send_json({
+            "action": "upload",
+            "filename": filename,
+            "filesize": filesize,
+            "is_edit": True,
+            "is_owned": is_owned
+        })
+
         resp = self.recv_json()
         if resp.get('status') != 'ready':
             messagebox.showerror("Error", resp.get('message', 'Edit failed.'))
             return
+
         with open(path, 'rb') as f:
             while True:
                 data = f.read(4096)
                 if not data:
                     break
                 self.sock.sendall(data)
+
         result = self.recv_json()
         if result.get('status') == 'ok':
             messagebox.showinfo("Success", result.get('message'))
+            self.refresh_file_lists()
         else:
             messagebox.showerror("Error", result.get('message'))
 
     def delete_file(self):
-        # Determine selected filename
         sel = self.list_owned.curselection()
         if not sel:
             messagebox.showerror("Error", "Select one of your files to delete.")
@@ -429,7 +446,7 @@ class CloudClientGUI:
         filename = self.list_owned.get(sel[0])
         if not messagebox.askyesno("Confirm Delete", f"Really delete '{filename}'?"):
             return
-        self.send_json({"action":"delete", "filename": filename})
+        self.send_json({"action": "delete", "filename": filename})
         resp = self.recv_json()
         if resp.get('status') == 'ok':
             messagebox.showinfo("Deleted", resp.get('message'))
@@ -438,21 +455,20 @@ class CloudClientGUI:
             messagebox.showerror("Error", resp.get('message'))
 
     def rename_file(self):
-        # Determine selected filename (owned or shared)
         sel_owned = self.list_owned.curselection()
         sel_shared = self.list_shared.curselection()
         if sel_owned:
             old = self.list_owned.get(sel_owned[0])
         elif sel_shared:
             entry = self.list_shared.get(sel_shared[0])
-            old = entry.split(' (',1)[0]
+            old = entry.split(' (', 1)[0]
         else:
             messagebox.showerror("Error", "Select a file to rename.")
             return
         new = simpledialog.askstring("Rename File", f"New name for '{old}':")
         if not new:
             return
-        self.send_json({"action":"rename","old_filename":old,"new_filename":new})
+        self.send_json({"action": "rename", "old_filename": old, "new_filename": new})
         resp = self.recv_json()
         if resp.get('status') == 'ok':
             messagebox.showinfo("Renamed", resp.get('message'))
@@ -472,8 +488,10 @@ class CloudClientGUI:
             return
         action = "add_permission" if add else "remove_permission"
         self.send_json({
-            "action": action, "file": filename,
-            "target_user": target, "permission": perm
+            "action": action,
+            "file": filename,
+            "target_user": target,
+            "permission": perm
         })
         resp = self.recv_json()
         if resp.get('status') == 'ok':
