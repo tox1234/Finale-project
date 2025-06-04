@@ -1,3 +1,8 @@
+"""
+Author: Ido Shema
+Last_updated: 02/06/2025
+Description: server_manager
+"""
 import socket
 import threading
 from database_manager import DatabaseManager
@@ -153,7 +158,7 @@ class ServerManager:
                 )
                 if self.file_manager.rename_file(old_filepath, new_filepath_candidate):
                     self.db.rename_file(old_filename, new_filename,
-                                      user['_id'], new_filepath_candidate)
+                                        user['_id'], new_filepath_candidate)
                     filepath = new_filepath_candidate
                 else:
                     send_msg(conn, 'error', 'Failed to rename file during edit.')
