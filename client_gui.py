@@ -1,3 +1,9 @@
+"""
+Author: Ido Shema
+Last_updated: 01/06/2025
+Description: client manager
+"""
+
 import socket
 import tkinter as tk
 from tkinter import ttk, messagebox, filedialog, simpledialog
