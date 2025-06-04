@@ -1,3 +1,8 @@
+"""
+Author: Ido Shema
+Last_updated: 05/05/2025
+Description: database manager
+"""
 from pymongo import MongoClient, errors
 import hashlib
 
