@@ -1,3 +1,8 @@
+"""
+Author: Ido Shema
+Last_updated: 20/05/2025
+Description: file manager
+"""
 import os
 import threading
 from typing import Dict, Tuple
