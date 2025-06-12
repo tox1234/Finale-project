@@ -50,7 +50,6 @@ class DatabaseManager:
         try:
             self.files_col.drop_index('filename_1')
         except errors.OperationFailure as e:
-            # This specific error code means "index not found"
             if e.code == 27:
                 print("Note: Index 'filename_1' not found, no need to drop.")
             else:
