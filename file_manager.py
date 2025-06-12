@@ -27,7 +27,7 @@ def get_file_size(filepath: str) -> int:
     """
     try:
         return os.path.getsize(filepath) if os.path.exists(filepath) else 0
-    except OSError:  # More specific exception
+    except OSError:
         return 0
 
 
@@ -193,7 +193,7 @@ class FileManager:
             with open(filepath, 'wb') as f:
                 f.write(data)
             return True
-        except RuntimeError as e:  # Specifically for lock acquisition failure
+        except RuntimeError as e:
             print(f"Could not acquire lock to write file {filepath}: {e}")
             return False
         except OSError as e:
@@ -218,7 +218,7 @@ class FileManager:
         try:
             self.acquire_read_lock(filepath)
             lock_acquired_successfully = True
-            if not os.path.exists(filepath):  # Check existence after acquiring lock
+            if not os.path.exists(filepath):
                 print(f"File not found for reading: {filepath}")
                 return False, b''
             with open(filepath, 'rb') as f:
