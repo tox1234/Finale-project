@@ -1,6 +1,6 @@
 """
 Author: Ido Shema
-Last_updated: 01/06/2025
+Last_updated: 12/06/2025
 Description: client manager
 """
 
@@ -181,21 +181,27 @@ class CloudClient:
             :return: Tuple[bool, str]: A tuple indicating success (True, message) or failure (False, error_message).
         """
         self.send_msg('download', filename)
-        status, filesize = self.recv_msg(2)
+        status, filesize_str = self.recv_msg(2)
         if status != 'ready':
-            return False, filesize
-        filesize = int(filesize)
+            return False, filesize_str
+
+        try:
+            filesize = int(filesize_str)
+        except ValueError:
+            return False, "Invalid filesize from server."
+
         try:
             with open(save_path, 'wb') as f:
                 remaining = filesize
                 while remaining > 0:
                     chunk = self.sock.recv(min(4096, remaining))
                     if not chunk:
-                        break
+                        raise ConnectionError("Connection lost during download.")
                     f.write(chunk)
                     remaining -= len(chunk)
         except Exception as e:
             return False, f"Error writing file: {e}"
+
         status, message = self.recv_msg(2)
         return status == 'ok', message
 
@@ -240,41 +246,14 @@ class CloudClient:
         status, message = self.recv_msg(2)
         return status == 'ok', message
 
-    def view_file(self, filename: str) -> Tuple[bool, str, bytes]:
-        """
-            Retrieves a file's content from the server for viewing.
-            Sends a 'view' command.
-            :param : self: The instance of the CloudClient.
-            :param : filename: The name of the file to be viewed.
-            :return: Tuple[bool, str, bytes]: A tuple containing:
-                                            - bool: True if successful, False otherwise.
-                                            - str: A message from the server.
-                                            - bytes: The raw byte content of the file if successful, else b''.
-        """
-        self.send_msg('view', filename)
-        status, filesize = self.recv_msg(2)
-        if status != 'ready':
-            return False, filesize, b''
-        filesize = int(filesize)
-        data = b''
-        remaining = filesize
-        while remaining > 0:
-            chunk = self.sock.recv(min(4096, remaining))
-            if not chunk:
-                break
-            data += chunk
-            remaining -= len(chunk)
-        status, message = self.recv_msg(2)
-        return status == 'ok', message, data
-
 
 class CloudClientGUI:
     def __init__(self, master: tk.Tk):
         """
             Initializes the CloudClientGUI application.
             Sets up the main window, initializes the CloudClient, and creates the splash/login UI.
-            :param : self: The instance of CloudClientGUI.
-            :param : master: The root tk.Tk window for the application.
+            :param self: The instance of CloudClientGUI.
+            :param master: The root tk.Tk window for the application.
             :return: None. The application window will be destroyed if client connection fails.
         """
         self.master = master
@@ -298,7 +277,7 @@ class CloudClientGUI:
         """
             Configures the visual styles for Tkinter widgets using a modern dark theme.
             Sets up colors and fonts for labels, buttons, entries, etc.
-            :param : self: The instance of CloudClientGUI.
+            :param self: The instance of CloudClientGUI.
             :return: None
         """
         self.style = ttk.Style()
@@ -333,7 +312,7 @@ class CloudClientGUI:
         """
             Creates and displays an animated splash screen upon application startup.
             The splash screen shows loading text and an indeterminate progress bar.
-            :param : self: The instance of CloudClientGUI.
+            :param self: The instance of CloudClientGUI.
             :return: None
         """
         self.splash_frame = ttk.Frame(self.master)
@@ -365,7 +344,7 @@ class CloudClientGUI:
         """
             Handles the transition from the splash screen to the login frame.
             Stops the loading animation, hides the splash screen, and displays the login frame.
-            :param : self: The instance of CloudClientGUI.
+            :param self: The instance of CloudClientGUI.
             :return: None
         """
         self.loading_bar.stop()
@@ -377,7 +356,7 @@ class CloudClientGUI:
         """
             Creates the user interface for login and registration.
             Includes entry fields for username and password, and buttons for login and register.
-            :param : self: The instance of CloudClientGUI.
+            :param self: The instance of CloudClientGUI.
             :return: None
         """
         self.login_frame = ttk.Frame(self.master, style='TFrame')
@@ -407,7 +386,7 @@ class CloudClientGUI:
         """
             Creates the main application interface displayed after successful login.
             Includes file lists, permission management, and action buttons (upload, download, etc.).
-            :param : self: The instance of CloudClientGUI.
+            :param self: The instance of CloudClientGUI.
             :return: None
         """
         self.main_frame = ttk.Frame(self.master)
@@ -437,7 +416,7 @@ class CloudClientGUI:
         """
             Creates and configures the listbox widgets for displaying 'Your Files' (owned) and 'Shared Files'.
             Includes scrollbars and binds selection events.
-            :param : self: The instance of CloudClientGUI.
+            :param self: The instance of CloudClientGUI.
             :return: None
         """
         owned_frame = ttk.Frame(self.main_frame)
@@ -466,7 +445,7 @@ class CloudClientGUI:
         """
             Creates the UI section for managing file permissions.
             Includes an entry for target username and buttons to add/remove read/edit permissions.
-            :param : self: The instance of CloudClientGUI.
+            :param self: The instance of CloudClientGUI.
             :return: None
         """
         perm_frame = ttk.Frame(self.main_frame)
@@ -493,7 +472,7 @@ class CloudClientGUI:
     def start_auto_refresh(self):
         """
             Starts a recurring task to automatically refresh the file lists every 5 seconds.
-            :param : self: The instance of CloudClientGUI.
+            :param self: The instance of CloudClientGUI.
             :return: None
         """
         self.refresh_file_lists()
@@ -504,7 +483,7 @@ class CloudClientGUI:
             Refreshes the content of the 'owned' and 'shared' file listboxes.
             It fetches the latest file lists from the server and updates the UI,
             attempting to preserve any existing selections.
-            :param : self: The instance of CloudClientGUI.
+            :param self: The instance of CloudClientGUI.
             :return: None
         """
         selected_owned_indices = self.list_owned.curselection()
@@ -547,7 +526,7 @@ class CloudClientGUI:
             Handles the user registration process.
             Retrieves username and password from input fields, calls client's register method,
             and shows success/error messages. Automatically attempts to log in upon successful registration.
-            :param : self: The instance of CloudClientGUI.
+            :param self: The instance of CloudClientGUI.
             :return: None
         """
         username = self.ent_username.get()
@@ -564,7 +543,7 @@ class CloudClientGUI:
             Handles the user login process.
             Retrieves username and password, calls client's login method.
             If successful, hides login frame and shows main interface. Otherwise, shows error.
-            :param : self: The instance of CloudClientGUI.
+            :param self: The instance of CloudClientGUI.
             :return: None
         """
         username = self.ent_username.get()
@@ -577,11 +556,25 @@ class CloudClientGUI:
             messagebox.showerror("Error", message)
 
     def on_select_owned(self, event=None):
-        """Handle selection in owned files list"""
+        """
+        Handles selection events in the 'owned files' listbox.
+        Clears any selection in the 'shared files' listbox to ensure only one
+        item is selected across both lists at any time.
+        :param self: The instance of the CloudClientGUI.
+        :param event: The event that triggered this callback (optional).
+        :return: None
+        """
         self.list_shared.selection_clear(0, tk.END)
 
     def on_select_shared(self, event=None):
-        """Handle selection in shared files list"""
+        """
+        Handles selection events in the 'shared files' listbox.
+        Clears any selection in the 'owned files' listbox to ensure only one
+        item is selected across both lists at any time.
+        :param self: The instance of the CloudClientGUI.
+        :param event: The event that triggered this callback (optional).
+        :return: None
+        """
         self.list_owned.selection_clear(0, tk.END)
 
     def upload_new(self):
@@ -589,7 +582,7 @@ class CloudClientGUI:
             Handles the action of uploading a new file.
             Prompts the user to select a file using a file dialog, then calls the client's
             upload_file method. Shows success/error messages and refreshes file lists.
-            :param : self: The instance of CloudClientGUI.
+            :param self: The instance of CloudClientGUI.
             :return: None
         """
         filepath = filedialog.askopenfilename()
@@ -604,9 +597,9 @@ class CloudClientGUI:
     def download_file(self):
         """
             Handles the action of downloading a selected file.
-            Determines the selected file from either listbox, prompts for save location,
-            then calls client's download_file method. Shows success/error messages.
-            :param : self: The instance of CloudClientGUI.
+            Determines the selected file from either listbox, prompts for a save location,
+            then calls the client's download_file method. Shows success/error messages.
+            :param self: The instance of CloudClientGUI.
             :return: None
         """
         selected_owned = self.list_owned.curselection()
@@ -637,14 +630,19 @@ class CloudClientGUI:
             messagebox.showerror("Error", message)
 
     def edit_file(self):
-        """Handle file edit"""
-        # Get selected file
+        """
+        Handles the process of editing a file.
+        This allows a user with edit permissions to replace a file on the server
+        with a new local file. It can also handle renaming the file simultaneously
+        if the new local file has a different name.
+        :param self: The instance of the CloudClientGUI.
+        :return: None
+        """
         selected = self.list_owned.curselection() or self.list_shared.curselection()
         if not selected:
             messagebox.showwarning("Warning", "Please select a file to edit")
             return
 
-        # Get old filename and determine if owned
         is_owned = bool(self.list_owned.curselection())
         if is_owned:
             old_filename = self.list_owned.get(selected[0])
@@ -655,32 +653,27 @@ class CloudClientGUI:
                 messagebox.showerror("Error", "You don't have edit permission for this file")
                 return
 
-        # Ask user to select the updated file to upload
         updated_filepath = filedialog.askopenfilename(title="Select updated file to upload as edit")
         if not updated_filepath:
             return
 
-        # Use the exact filename (with extension) as new_filename
         new_filename = os.path.basename(updated_filepath)
 
-        # Upload the selected file as the edit (with possible rename)
         success, message = self.client.upload_file(updated_filepath, is_edit=True, is_owned=is_owned,
                                                    old_filename=old_filename, new_filename=new_filename)
         if not success:
             messagebox.showerror("Error", message)
-        else:
-            # Force an immediate refresh of the file lists
-            self.refresh_file_lists()
-            # Clear any existing selections
-            self.list_owned.selection_clear(0, tk.END)
-            self.list_shared.selection_clear(0, tk.END)
+
+        self.refresh_file_lists()
+        self.list_owned.selection_clear(0, tk.END)
+        self.list_shared.selection_clear(0, tk.END)
 
     def delete_file(self):
         """
             Handles deleting a selected file owned by the user.
             Confirms deletion with user, then calls client's delete_file method.
             Shows success/error messages and refreshes file lists. Only works for owned files.
-            :param : self: The instance of CloudClientGUI.
+            :param self: The instance of CloudClientGUI.
             :return: None
         """
         selected = self.list_owned.curselection()
@@ -705,7 +698,7 @@ class CloudClientGUI:
             Handles renaming a selected file owned by the user.
             Prompts for new filename using a dialog, then calls client's rename_file method.
             Shows success/error messages and refreshes file lists. Only works for owned files.
-            :param : self: The instance of CloudClientGUI.
+            :param self: The instance of CloudClientGUI.
             :return: None
         """
         selected = self.list_owned.curselection()
@@ -731,9 +724,9 @@ class CloudClientGUI:
             Handles adding or removing a permission (read/edit) for a target user on a selected owned file.
             Retrieves filename, target user, then calls client's change_permission method.
             Shows success/error messages and refreshes file lists.
-            :param : self: The instance of CloudClientGUI.
-            :param : add: bool: True to add permission, False to remove.
-            :param : perm: str: The permission type ('read' or 'edit').
+            :param self: The instance of CloudClientGUI.
+            :param add: bool: True to add permission, False to remove.
+            :param perm: str: The permission type ('read' or 'edit').
             :return: None
         """
         selected = self.list_owned.curselection()
@@ -761,231 +754,236 @@ class CloudClientGUI:
         self.refresh_file_lists()
 
     def view_file(self):
-        """Handle file viewing"""
-        # Get selected file
+        """
+        Orchestrates the process of viewing a selected file in a new window.
+        This function determines the selected file, creates a new window, and
+        then dispatches the loading and display logic to helper methods based
+        on the file's extension, ensuring the GUI remains responsive.
+        :param self: The instance of the CloudClientGUI.
+        :return: None
+        """
         selected = self.list_owned.curselection() or self.list_shared.curselection()
         if not selected:
             messagebox.showwarning("Warning", "Please select a file to view")
             return
 
-        # Get filename from appropriate list
         if self.list_owned.curselection():
             filename = self.list_owned.get(selected[0])
         else:
             entry = self.list_shared.get(selected[0])
             filename = entry.rsplit(' (', 1)[0]
 
-        # Get file extension
         _, ext = os.path.splitext(filename.lower())
 
-        # Create a new window for viewing
         view_window = tk.Toplevel(self.master)
         view_window.title(f"Viewing: {filename}")
         view_window.geometry("800x600")
         view_window.configure(bg='#0a0a0a')
 
-        # Configure grid layout
-        view_window.grid_rowconfigure(1, weight=1)  # Main content row
-        view_window.grid_columnconfigure(0, weight=1)  # Main content column
+        view_window.grid_rowconfigure(1, weight=1)
+        view_window.grid_columnconfigure(0, weight=1)
 
-        # Add status label at the top
-        status_label = ttk.Label(view_window, text="Loading file...", font=('Segoe UI', 10))
+        status_label = ttk.Label(view_window, text="Requesting file...", font=('Segoe UI', 10))
         status_label.grid(row=0, column=0, pady=5, sticky='ew')
 
-        # Add close button (only for non-PDF files) before loading the file
-        if ext != '.pdf':
-            close_button = ttk.Button(view_window, text="Close", command=view_window.destroy)
-            close_button.grid(row=3, column=0, pady=10)
+        def load_and_display():
+            self.client.send_msg('view', filename)
+            status, filesize_str = self.client.recv_msg(2)
 
-        def load_file():
-            success, message, data = self.client.view_file(filename)
-            if not success:
+            if status != 'ready':
+                message = filesize_str
                 if "file is being edited" in str(message).lower():
                     status_label.config(text="File is being edited. Please try again later.")
                     messagebox.showwarning("Warning", "File is being edited. Please try again later.")
-                    view_window.destroy()
-                    return
-                status_label.config(text=f"Error: {message}")
-                messagebox.showerror("Error", message)
+                else:
+                    status_label.config(text=f"Error: {message}")
+                    messagebox.showerror("Error", message)
                 view_window.destroy()
                 return
+
             try:
-                if ext in ['.png', '.jpg', '.jpeg', '.gif', '.bmp']:
-                    # Handle image files
-                    try:
-                        # Create image from bytes
-                        image = Image.open(io.BytesIO(data))
+                filesize = int(filesize_str)
+            except ValueError:
+                messagebox.showerror("Error", "Invalid filesize received from server.")
+                view_window.destroy()
+                return
 
-                        # Calculate resize dimensions while maintaining aspect ratio
-                        max_width = 780  # Window width - padding
-                        max_height = 500  # Window height - padding
-                        width, height = image.size
+            status_label.config(text="Loading file...")
+            view_window.update_idletasks()
 
-                        if width > max_width or height > max_height:
-                            ratio = min(max_width / width, max_height / height)
-                            new_width = int(width * ratio)
-                            new_height = int(height * ratio)
-                            image = image.resize((new_width, new_height), Image.Resampling.LANCZOS)
-
-                        # Convert to PhotoImage
-                        photo = ImageTk.PhotoImage(image)
-
-                        # Create label to display image
-                        image_label = ttk.Label(view_window, image=photo)
-                        image_label.image = photo  # Keep a reference!
-                        image_label.grid(row=1, column=0, padx=10, pady=10, sticky='nsew')
-
-                        status_label.config(text="Image loaded successfully")
-                    except Exception as e:
-                        status_label.config(text=f"Error displaying image: {str(e)}")
-                        messagebox.showerror("Error", f"Could not display image: {str(e)}")
-                        view_window.destroy()
-                        return
-
-                elif ext == '.pdf':
-                    # Handle PDF files
-                    try:
-                        # Create a temporary file
-                        with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
-                            temp_file.write(data)
-                            temp_path = temp_file.name
-
-                        # Create container frame for PDF viewer
-                        pdf_container = ttk.Frame(view_window)
-                        pdf_container.grid(row=1, column=0, sticky='nsew', padx=10, pady=10)
-                        pdf_container.grid_rowconfigure(0, weight=1)
-                        pdf_container.grid_columnconfigure(0, weight=1)
-
-                        # Create canvas and scrollbar
-                        canvas = tk.Canvas(pdf_container, bg='#1f1f1f')
-                        scrollbar_y = ttk.Scrollbar(pdf_container, orient='vertical', command=canvas.yview)
-                        scrollbar_x = ttk.Scrollbar(pdf_container, orient='horizontal', command=canvas.xview)
-
-                        # Configure canvas
-                        canvas.configure(yscrollcommand=scrollbar_y.set, xscrollcommand=scrollbar_x.set)
-
-                        # Grid layout for PDF viewer
-                        canvas.grid(row=0, column=0, sticky='nsew')
-                        scrollbar_y.grid(row=0, column=1, sticky='ns')
-                        scrollbar_x.grid(row=1, column=0, sticky='ew')
-
-                        # Create frame inside canvas for PDF pages
-                        pdf_frame = ttk.Frame(canvas)
-                        canvas.create_window((0, 0), window=pdf_frame, anchor='nw')
-
-                        # Open PDF and display pages
-                        doc = fitz.open(temp_path)
-                        current_page = 0
-                        page_images = []  # Keep references to prevent garbage collection
-
-                        def display_page(page_num):
-                            nonlocal current_page
-                            if 0 <= page_num < len(doc):
-                                # Clear previous page
-                                for widget in pdf_frame.winfo_children():
-                                    widget.destroy()
-
-                                # Get page
-                                page = doc[page_num]
-                                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))  # 2x zoom for better quality
-
-                                # Convert to PIL Image
-                                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
-
-                                # Convert to PhotoImage
-                                photo = ImageTk.PhotoImage(img)
-                                page_images.append(photo)  # Keep reference
-
-                                # Display page
-                                page_label = ttk.Label(pdf_frame, image=photo)
-                                page_label.grid(row=0, column=0, padx=10, pady=10)
-
-                                # Update canvas scroll region
-                                pdf_frame.update_idletasks()
-                                canvas.configure(scrollregion=canvas.bbox("all"))
-
-                                current_page = page_num
-                                status_label.config(text=f"Page {page_num + 1} of {len(doc)}")
-
-                        # Navigation buttons
-                        nav_frame = ttk.Frame(view_window)
-                        nav_frame.grid(row=2, column=0, pady=5)
-
-                        def prev_page():
-                            if current_page > 0:
-                                display_page(current_page - 1)
-
-                        def next_page():
-                            if current_page < len(doc) - 1:
-                                display_page(current_page + 1)
-
-                        ttk.Button(nav_frame, text="Previous", command=prev_page).grid(row=0, column=0, padx=5)
-                        ttk.Button(nav_frame, text="Next", command=next_page).grid(row=0, column=1, padx=5)
-
-                        # Display first page
-                        display_page(0)
-
-                        # Schedule cleanup of temp file when window is closed
-                        def on_window_close():
-                            try:
-                                doc.close()
-                                os.unlink(temp_path)
-                            except:
-                                pass
-                            view_window.destroy()
-
-                        view_window.protocol("WM_DELETE_WINDOW", on_window_close)
-
-                    except Exception as e:
-                        status_label.config(text=f"Error displaying PDF: {str(e)}")
-                        messagebox.showerror("Error", f"Could not display PDF: {str(e)}")
-                        try:
-                            os.unlink(temp_path)
-                        except:
-                            pass
-                        view_window.destroy()
-                        return
-
+            try:
+                if ext == '.pdf':
+                    self.display_pdf_from_stream(view_window, status_label, filesize)
                 else:
-                    # Handle text files
-                    try:
-                        # Create text widget with scrollbar
-                        text_container = ttk.Frame(view_window)
-                        text_container.grid(row=1, column=0, sticky='nsew', padx=10, pady=10)
-                        text_container.grid_rowconfigure(0, weight=1)
-                        text_container.grid_columnconfigure(0, weight=1)
-
-                        text_widget = tk.Text(text_container, wrap=tk.WORD, bg='#1f1f1f', fg='white',
-                                              font=('Consolas', 12), padx=10, pady=10)
-                        scrollbar = ttk.Scrollbar(text_container, orient=tk.VERTICAL, command=text_widget.yview)
-                        text_widget.configure(yscrollcommand=scrollbar.set)
-
-                        text_widget.grid(row=0, column=0, sticky='nsew')
-                        scrollbar.grid(row=0, column=1, sticky='ns')
-
-                        # Try to decode as text
-                        try:
-                            content = data.decode('utf-8')
-                        except UnicodeDecodeError:
-                            content = "[Binary file - cannot display content]"
-
-                        text_widget.delete('1.0', tk.END)
-                        text_widget.insert('1.0', content)
-                        status_label.config(text="File loaded successfully")
-                    except Exception as e:
-                        status_label.config(text=f"Error displaying text: {str(e)}")
-                        messagebox.showerror("Error", f"Could not display text: {str(e)}")
-                        view_window.destroy()
-                        return
-
+                    self.display_data_from_memory(view_window, status_label, filesize, ext)
             except Exception as e:
                 status_label.config(text=f"Error: {str(e)}")
                 messagebox.showerror("Error", str(e))
                 view_window.destroy()
-                return
 
-        # Start loading the file
-        load_file()
+        view_window.after(100, load_and_display)
+
+    def display_pdf_from_stream(self, view_window, status_label, filesize):
+        """
+        Handles the memory-efficient display of a PDF file by streaming.
+        Receives PDF data chunk-by-chunk and writes it directly to a temporary
+        file on disk. Once complete, it uses the fitz library to render the
+        pages from the temp file onto a Tkinter canvas with navigation.
+        :param self: The instance of the CloudClientGUI.
+        :param view_window: The Toplevel window to display the PDF in.
+        :param status_label: The label widget for status updates.
+        :param filesize: The total size of the incoming file data.
+        :return: None
+        """
+        temp_path = None
+        try:
+            with tempfile.NamedTemporaryFile(delete=False, suffix='.pdf') as temp_file:
+                temp_path = temp_file.name
+                remaining = filesize
+                while remaining > 0:
+                    chunk = self.client.sock.recv(min(4096, remaining))
+                    if not chunk:
+                        raise IOError("Connection lost while receiving PDF data.")
+                    temp_file.write(chunk)
+                    remaining -= len(chunk)
+
+            final_status, final_message = self.client.recv_msg(2)
+            if final_status != 'ok':
+                raise IOError(f"Server reported an error after send: {final_message}")
+
+            pdf_container = ttk.Frame(view_window)
+            pdf_container.grid(row=1, column=0, sticky='nsew', padx=10, pady=10)
+            pdf_container.grid_rowconfigure(0, weight=1)
+            pdf_container.grid_columnconfigure(0, weight=1)
+            canvas = tk.Canvas(pdf_container, bg='#1f1f1f')
+            scrollbar_y = ttk.Scrollbar(pdf_container, orient='vertical', command=canvas.yview)
+            scrollbar_x = ttk.Scrollbar(pdf_container, orient='horizontal', command=canvas.xview)
+            canvas.configure(yscrollcommand=scrollbar_y.set, xscrollcommand=scrollbar_x.set)
+            canvas.grid(row=0, column=0, sticky='nsew')
+            scrollbar_y.grid(row=0, column=1, sticky='ns')
+            scrollbar_x.grid(row=1, column=0, sticky='ew')
+            pdf_frame = ttk.Frame(canvas)
+            canvas.create_window((0, 0), window=pdf_frame, anchor='nw')
+            doc = fitz.open(temp_path)
+            current_page = 0
+            page_images = []
+
+            nav_frame = ttk.Frame(view_window)
+            nav_frame.grid(row=2, column=0, pady=5)
+
+            page_label_ref = [None]
+
+            def display_page(page_num):
+                nonlocal current_page
+                if not (0 <= page_num < len(doc)):
+                    return
+                if page_label_ref[0]:
+                    page_label_ref[0].destroy()
+
+                current_page = page_num
+                page = doc[current_page]
+                pix = page.get_pixmap(matrix=fitz.Matrix(2, 2))
+                img = Image.frombytes("RGB", [pix.width, pix.height], pix.samples)
+                photo = ImageTk.PhotoImage(img)
+                page_images.append(photo)
+
+                page_label = ttk.Label(pdf_frame, image=photo)
+                page_label.grid(row=0, column=0, padx=10, pady=10)
+                page_label_ref[0] = page_label
+
+                pdf_frame.update_idletasks()
+                canvas.configure(scrollregion=canvas.bbox("all"))
+                status_label.config(text=f"Page {current_page + 1} of {len(doc)}")
+
+                prev_button.config(state='normal' if current_page > 0 else 'disabled')
+                next_button.config(state='normal' if current_page < len(doc) - 1 else 'disabled')
+
+            def on_window_close():
+                try:
+                    doc.close()
+                    os.unlink(temp_path)
+                except Exception:
+                    pass
+                view_window.destroy()
+
+            prev_button = ttk.Button(nav_frame, text="Previous", command=lambda: display_page(current_page - 1))
+            prev_button.grid(row=0, column=0, padx=5)
+            next_button = ttk.Button(nav_frame, text="Next", command=lambda: display_page(current_page + 1))
+            next_button.grid(row=0, column=1, padx=5)
+
+            display_page(0)
+            view_window.protocol("WM_DELETE_WINDOW", on_window_close)
+
+        except Exception as e:
+            if temp_path and os.path.exists(temp_path):
+                os.unlink(temp_path)
+            raise e
+
+    def display_data_from_memory(self, view_window, status_label, filesize, ext):
+        """
+        Handles the display of non-PDF files (images, text) by loading them
+        into a memory variable. It receives the entire file content into a
+        bytes object and then uses the appropriate library (PIL or Tkinter)
+        to render it.
+        :param self: The instance of the CloudClientGUI.
+        :param view_window: The Toplevel window to display the content in.
+        :param status_label: The label widget for status updates.
+        :param filesize: The total size of the incoming file data.
+        :param ext: The file extension to determine how to display the data.
+        :return: None
+        """
+        data = b''
+        remaining = filesize
+        while remaining > 0:
+            chunk = self.client.sock.recv(min(4096, remaining))
+            if not chunk:
+                raise IOError("Connection lost while receiving file data.")
+            data += chunk
+            remaining -= len(chunk)
+
+        final_status, final_message = self.client.recv_msg(2)
+        if final_status != 'ok':
+            raise IOError(f"Server reported an error after send: {final_message}")
+
+        close_button = ttk.Button(view_window, text="Close", command=view_window.destroy)
+        close_button.grid(row=3, column=0, pady=10)
+
+        if ext in ['.png', '.jpg', '.jpeg', '.gif', '.bmp']:
+            try:
+                image = Image.open(io.BytesIO(data))
+                max_width, max_height = 780, 500
+                if image.width > max_width or image.height > max_height:
+                    ratio = min(max_width / image.width, max_height / image.height)
+                    image = image.resize((int(image.width * ratio), int(image.height * ratio)),
+                                         Image.Resampling.LANCZOS)
+                photo = ImageTk.PhotoImage(image)
+                image_label = ttk.Label(view_window, image=photo)
+                image_label.image = photo
+                image_label.grid(row=1, column=0, padx=10, pady=10, sticky='nsew')
+                status_label.config(text="Image loaded successfully")
+            except Exception as e:
+                raise RuntimeError(f"Could not display image: {e}")
+        else:
+            try:
+                text_container = ttk.Frame(view_window)
+                text_container.grid(row=1, column=0, sticky='nsew', padx=10, pady=10)
+                text_container.grid_rowconfigure(0, weight=1)
+                text_container.grid_columnconfigure(0, weight=1)
+                text_widget = tk.Text(text_container, wrap=tk.WORD, bg='#1f1f1f', fg='white', font=('Consolas', 12),
+                                      padx=10, pady=10)
+                scrollbar = ttk.Scrollbar(text_container, orient=tk.VERTICAL, command=text_widget.yview)
+                text_widget.configure(yscrollcommand=scrollbar.set)
+                text_widget.grid(row=0, column=0, sticky='nsew')
+                scrollbar.grid(row=0, column=1, sticky='ns')
+                try:
+                    content = data.decode('utf-8')
+                except UnicodeDecodeError:
+                    content = "[Binary file - cannot display content]"
+                text_widget.insert('1.0', content)
+                text_widget.config(state='disabled')
+                status_label.config(text="File loaded successfully")
+            except Exception as e:
+                raise RuntimeError(f"Could not display text: {e}")
 
 
 if __name__ == '__main__':
