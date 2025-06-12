@@ -1,7 +1,7 @@
 """
 Author: Ido Shema
-Last_updated: 02/06/2025
-Description: server_manager
+Last_updated: 12/06/2025
+Description: Server manager
 """
 import socket
 import threading
@@ -9,7 +9,8 @@ from database_manager import DatabaseManager
 from file_manager import FileManager
 import ssl
 import protocol
-import reprlib
+import os
+import traceback
 
 HOST = 'localhost'
 PORT = 9009
@@ -102,13 +103,14 @@ class ServerManager:
         """
             Handles requests to list files owned by or shared with the user.
             Retrieves file lists from DatabaseManager and sends them to the client.
+            It uses str() to serialize the lists to prevent truncating long filenames.
             :param self: The instance of the ServerManager.
             :param conn: The client socket connection.
             :param user: The authenticated user object.
             :return: None
         """
         owned, shared = self.db.get_user_files(user['_id'])
-        send_msg(conn, 'ok', reprlib.repr(owned), reprlib.repr(shared))
+        send_msg(conn, 'ok', str(owned), str(shared))
 
     def handle_upload(self, conn, user, _data=None):
         """
@@ -146,12 +148,10 @@ class ServerManager:
             is_owner = (file_doc['owner_user_id'] == user['_id'])
             has_edit = user['_id'] in file_doc.get('allowed_edit_user_ids', [])
 
-            # Only allow edit if owner or has edit permission
             if not (is_owner or has_edit):
                 send_msg(conn, 'error', 'No permission to edit this file.')
                 return
 
-            # If this is a rename operation (explicitly requested by owner)
             if old_filename != new_filename and is_owner:
                 new_filepath_candidate = self.file_manager.get_file_path(
                     new_filename, file_doc['owner_user_id']
@@ -164,7 +164,6 @@ class ServerManager:
                     send_msg(conn, 'error', 'Failed to rename file during edit.')
                     return
             else:
-                # For normal edits, use the original filepath regardless of new_filename
                 filepath = old_filepath
         else:
             existing_doc_for_new = self.db.get_file_doc(new_filename, user['_id'])
@@ -175,7 +174,7 @@ class ServerManager:
             filepath = self.file_manager.get_file_path(new_filename, user['_id'])
             self.db.create_file(new_filename, filepath, user['_id'])
 
-        if not filepath:  # Should not happen if logic above is correct
+        if not filepath:
             send_msg(conn, 'error', 'File path could not be determined.')
             return
 
@@ -211,9 +210,8 @@ class ServerManager:
 
     def handle_download(self, conn, user, _data=None):
         """
-            Handles file download requests.
-            Receives filename, retrieves file, reads with read lock,
-            and sends it to the client.
+            Handles file download requests by streaming the file in chunks
+            to keep server memory usage low and constant.
             :param self: The instance of the ServerManager.
             :param conn: The client socket connection.
             :param user: The authenticated user object.
@@ -231,14 +229,29 @@ class ServerManager:
             return
 
         filepath = file_doc['path']
-        success, file_data = self.file_manager.read_file(filepath)
 
-        if not success:
-            send_msg(conn, 'error', 'Failed to read file from server.')
+        try:
+            if not os.path.exists(filepath):
+                send_msg(conn, 'error', 'File metadata exists, but file is missing on server.')
+                return
+            filesize = os.path.getsize(filepath)
+        except OSError as e:
+            send_msg(conn, 'error', f'Could not access file on server: {e}')
             return
 
-        send_msg(conn, 'ready', str(len(file_data)))
-        conn.sendall(file_data)
+        send_msg(conn, 'ready', str(filesize))
+
+        try:
+            with open(filepath, 'rb') as f:
+                while True:
+                    chunk = f.read(4096)
+                    if not chunk:
+                        break
+                    conn.sendall(chunk)
+        except IOError as e:
+            print(f"Error during file transmission for {filepath}: {e}")
+            return
+
         send_msg(conn, 'ok', 'Download complete.')
 
     def handle_permission(self, conn, user, _data=None, add=True):
@@ -287,10 +300,13 @@ class ServerManager:
             send_msg(conn, 'error', 'Missing filename.')
             return
 
-        file_doc = self.db.get_file_doc(filename, user['_id'],
-                                        check_permissions=False)
-        if not file_doc or file_doc['owner_user_id'] != user['_id']:
-            send_msg(conn, 'error', 'File not found or not owner.')
+        file_doc = self.db.files_col.find_one({
+            "filename": filename,
+            "owner_user_id": user['_id']
+        })
+
+        if not file_doc:
+            send_msg(conn, 'error', 'File not found or you are not the owner.')
             return
 
         deleted_from_fs = self.file_manager.delete_file(file_doc['path'])
@@ -323,10 +339,17 @@ class ServerManager:
             send_msg(conn, 'error', 'New name must be different from old name.')
             return
 
-        file_doc = self.db.get_file_doc(old_filename, user['_id'],
-                                        check_permissions=False)
-        if not file_doc or file_doc['owner_user_id'] != user['_id']:
-            send_msg(conn, 'error', 'File not found or not owner.')
+        file_doc = self.db.files_col.find_one({
+            "filename": old_filename,
+            "owner_user_id": user['_id']
+        })
+
+        if not file_doc:
+            send_msg(conn, 'error', 'File not found or you are not the owner.')
+            return
+
+        if self.db.files_col.find_one({"filename": new_filename, "owner_user_id": user['_id']}):
+            send_msg(conn, 'error', f'You already have a file named "{new_filename}".')
             return
 
         new_filepath = self.file_manager.get_file_path(new_filename,
@@ -343,13 +366,14 @@ class ServerManager:
             msg = ("Failed to fully rename file. FS: "
                    f"{'OK' if renamed_fs else 'Fail'}, "
                    f"DB: {'OK' if renamed_db else 'Fail'}")
+            if renamed_fs and not renamed_db:
+                self.file_manager.rename_file(new_filepath, file_doc['path'])
             send_msg(conn, 'error', msg)
 
     def handle_view(self, conn, user, _data=None):
         """
-            Handles requests to view file content.
-            Verifies permission, acquires read lock, reads data,
-            sends it, and releases lock.
+            Handles requests to view file content by streaming the file in chunks
+            to keep server memory usage low and constant.
             :param self: The instance of the ServerManager.
             :param conn: The client socket connection.
             :param user: The authenticated user object.
@@ -367,23 +391,33 @@ class ServerManager:
             return
 
         filepath = file_doc['path']
-        lock_acquired = False
+
+        try:
+            if not os.path.exists(filepath):
+                send_msg(conn, 'error', 'File metadata exists, but file is missing on server.')
+                return
+            filesize = os.path.getsize(filepath)
+        except OSError as e:
+            send_msg(conn, 'error', f'Could not access file on server: {e}')
+            return
+
         try:
             self.file_manager.acquire_read_lock(filepath)
-            lock_acquired = True
-            success, file_data = self.file_manager.read_file(filepath)
-            if not success:
-                send_msg(conn, 'error', 'Failed to read file from disk.')
-                return
-
-            send_msg(conn, 'ready', str(len(file_data)))
-            conn.sendall(file_data)
+            send_msg(conn, 'ready', str(filesize))
+            with open(filepath, 'rb') as f:
+                while True:
+                    chunk = f.read(4096)
+                    if not chunk:
+                        break
+                    conn.sendall(chunk)
             send_msg(conn, 'ok', 'View complete.')
         except RuntimeError as e_lock:
             send_msg(conn, 'error', str(e_lock))
+        except IOError as e:
+            print(f"Error during file transmission for view {filepath}: {e}")
+            return
         finally:
-            if lock_acquired:
-                self.file_manager.release_read_lock(filepath)
+            self.file_manager.release_read_lock(filepath)
 
     def handle_check_file_exists(self, conn, user):
         """
@@ -434,40 +468,39 @@ class ServerManager:
             while True:
                 try:
                     action_tuple = recv_msg(conn, 1)
-                    if not action_tuple:  # Connection closed gracefully by client
+                    if not action_tuple:
                         break
                     action = action_tuple[0]
                 except ConnectionError:
                     print(f"Connection error with {addr}. Closing connection.")
                     break
-                except TypeError:  # If recv_msg returns None due to closed socket
+                except TypeError:
                     print(f"Connection with {addr} appears closed. Terminating handler.")
                     break
 
-                if user:  # User is logged in
+                if user:
                     handler = authenticated_action_handlers.get(action)
                     if handler:
                         handler(conn, user)
-                    elif action in action_handlers:  # e.g. trying to login/register again
-                        if action == 'login':  # Special case if already logged in
+                    elif action in action_handlers:
+                        if action == 'login':
                             user = action_handlers[action](conn, user)
                         else:
-                            action_handlers[action](conn, user)  # Or pass user if needed
+                            action_handlers[action](conn, user)
                     else:
                         send_msg(conn, 'error', f'Unknown action: {action}')
-                else:  # User is not logged in
+                else:
                     handler = action_handlers.get(action)
                     if handler:
                         if action == 'login':
-                            user = handler(conn, None)  # Login returns user
+                            user = handler(conn, None)
                         else:
-                            handler(conn, None)  # Other non-auth actions
+                            handler(conn, None)
                     else:
                         send_msg(conn, 'error', 'Not logged in and action requires authentication.')
 
         except Exception as e:
             print(f"Unexpected error handling client {addr}: {e}. Traceback follows.")
-            import traceback
             traceback.print_exc()
         finally:
             if user:
@@ -521,13 +554,12 @@ class ServerManager:
                     )
                     client_thread.daemon = True
                     client_thread.start()
-                except OSError:  # Socket closed during accept
+                except OSError:
                     if not self.running:
                         print("Server socket closed, shutting down listener.")
                         break
                     else:
                         print("Error accepting connection, server still running.")
-                        # Potentially add a small delay or error counter
         except KeyboardInterrupt:
             print("\nShutting down server via KeyboardInterrupt...")
         finally:
